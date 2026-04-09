@@ -38,6 +38,14 @@ Languages: English (`en`), Deutsch (`de`), Español (`es`), Français (`fr`), Р
 - **Input flow control** — when an interactive flow is active, the bot accepts only relevant input to keep context consistent and avoid accidental actions
 - **Security** — strict user ID whitelist; no one else can access your bot, even if they find it
 - **Localization** — UI localization is supported for multiple languages (`BOT_LOCALE`)
+- **Forum/Topics support** — use in Telegram groups with Topics enabled; each topic maps to a separate OpenCode session
+- **Multi-user whitelist** — allow multiple Telegram user IDs (comma-separated) via `TELEGRAM_ALLOWED_USER_IDS`
+- **Auto session per topic** — new topics automatically create OpenCode sessions with a ready confirmation
+- **Topic auto-rename** — topic names update to match the OpenCode session title after the first response
+- **Thinking cleanup** — "💭 Thinking..." messages are automatically deleted after the response arrives
+- **`/open` command** — get a clickable link to view the session in the OpenCode web UI
+- **Default project** — set `OPENCODE_DEFAULT_PROJECT_DIR` to skip project selection
+- **General topic ignored** — bot never responds in the General channel of forum groups
 
 Planned features currently in development are listed in [Current Task List](PRODUCT.md#current-task-list).
 
@@ -151,11 +159,13 @@ When installed via npm, the configuration wizard handles the initial setup. The 
 | Variable                        | Description                                                                                                  | Required | Default                  |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------------ | :------: | ------------------------ |
 | `TELEGRAM_BOT_TOKEN`            | Bot token from @BotFather                                                                                    |   Yes    | —                        |
-| `TELEGRAM_ALLOWED_USER_ID`      | Your numeric Telegram user ID                                                                                |   Yes    | —                        |
+| `TELEGRAM_ALLOWED_USER_IDS`     | Comma-separated numeric Telegram user IDs (e.g. `123,456`)                                                  |   Yes    | —                        |
 | `TELEGRAM_PROXY_URL`            | Proxy URL for Telegram API (SOCKS5/HTTP)                                                                     |    No    | —                        |
 | `OPENCODE_API_URL`              | OpenCode server URL                                                                                          |    No    | `http://localhost:4096`  |
 | `OPENCODE_SERVER_USERNAME`      | Server auth username                                                                                         |    No    | `opencode`               |
 | `OPENCODE_SERVER_PASSWORD`      | Server auth password                                                                                         |    No    | —                        |
+| `OPENCODE_DEFAULT_PROJECT_DIR`  | Auto-select this project directory (skips `/projects` prompt)                                                |    No    | —                        |
+| `OPENCODE_PUBLIC_URL`           | Public URL for `/open` command links (required if server is behind NAT)                                      |    No    | —                        |
 | `OPENCODE_MODEL_PROVIDER`       | Default model provider                                                                                       |   Yes    | `opencode`               |
 | `OPENCODE_MODEL_ID`             | Default model ID                                                                                             |   Yes    | `big-pickle`             |
 | `BOT_LOCALE`                    | Bot UI language (supported locale code, e.g. `en`, `de`, `es`, `fr`, `ru`, `zh`)                             |    No    | `en`                     |
@@ -229,7 +239,7 @@ To add a model to favorites, open OpenCode TUI (`opencode`), go to model selecti
 
 ## Security
 
-The bot enforces a strict **user ID whitelist**. Only the Telegram user whose numeric ID matches `TELEGRAM_ALLOWED_USER_ID` can interact with the bot. Messages from any other user are silently ignored and logged as unauthorized access attempts.
+The bot enforces a strict **user ID whitelist**. Only Telegram users whose numeric IDs are listed in `TELEGRAM_ALLOWED_USER_IDS` (comma-separated) can interact with the bot in private chats. In forum groups, the bot responds to anyone in the group but only in named topics — the General channel is ignored. Messages from unauthorized users in private chats are silently ignored and logged.
 
 Since the bot runs locally on your machine and connects to your local OpenCode server, there is no external attack surface beyond the Telegram Bot API itself.
 
@@ -270,7 +280,7 @@ npm run dev
 
 **Bot doesn't respond to messages**
 
-- Make sure `TELEGRAM_ALLOWED_USER_ID` matches your actual Telegram user ID (check with [@userinfobot](https://t.me/userinfobot))
+- Make sure `TELEGRAM_ALLOWED_USER_IDS` includes your actual Telegram user ID (check with [@userinfobot](https://t.me/userinfobot))
 - Verify the bot token is correct
 
 **"OpenCode server is not available"**

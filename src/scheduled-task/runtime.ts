@@ -111,7 +111,7 @@ export class ScheduledTaskRuntime {
 
   async initialize(bot: Bot<Context>): Promise<void> {
     this.botApi = bot.api;
-    this.chatId = config.telegram.allowedUserId;
+    this.chatId = config.telegram.allowedUserIds[0];
 
     if (this.initialized) {
       return;

@@ -2,8 +2,13 @@ import { Bot, Context } from "grammy";
 import type { FilePartInput, TextPartInput } from "@opencode-ai/sdk/v2";
 import { opencodeClient } from "../../opencode/client.js";
 import { clearSession, getCurrentSession, setCurrentSession } from "../../session/manager.js";
+import {
+  getSessionForTopic,
+  autoCreateSessionForTopic,
+} from "../../session/topic-manager.js";
 import { ingestSessionInfoForCache } from "../../session/cache-manager.js";
-import { getCurrentProject, isTtsEnabled } from "../../settings/manager.js";
+import { getCurrentProject, setCurrentProject, isTtsEnabled } from "../../settings/manager.js";
+import { config } from "../../config.js";
 import { getStoredAgent, resolveProjectAgent } from "../../agent/manager.js";
 import { getStoredModel } from "../../model/manager.js";
 import { formatVariantForButton } from "../../variant/manager.js";
@@ -19,6 +24,7 @@ import { formatErrorDetails } from "../../utils/error-format.js";
 import { logger } from "../../utils/logger.js";
 import { t } from "../../i18n/index.js";
 import { foregroundSessionState } from "../../scheduled-task/foreground-state.js";
+import type { SessionInfo } from "../../settings/manager.js";
 
 /** Module-level references for async callbacks that don't have ctx. */
 let botInstance: Bot<Context> | null = null;
@@ -94,6 +100,34 @@ async function resetMismatchedSessionContext(): Promise<void> {
   }
 }
 
+/**
+ * Resolve the session for the current context.
+ * In forum/topic groups, each topic gets its own session.
+ * In private chats, uses the global current session.
+ */
+async function resolveSession(ctx: Context): Promise<{ session: SessionInfo | null; isTopicSession: boolean }> {
+  const chatType = ctx.chat?.type;
+  const topicId = ctx.message?.message_thread_id;
+  const chatId = ctx.chat?.id;
+
+  // Forum topic mode: each topic = separate session
+  if ((chatType === "group" || chatType === "supergroup") && topicId && chatId) {
+    const existingSession = getSessionForTopic(chatId, topicId);
+    if (existingSession) {
+      return { session: existingSession, isTopicSession: true };
+    }
+
+    // Auto-create session for this topic
+    // Try to get topic name from the message
+    const topicName = (ctx.message as any)?.reply_to_message?.forum_topic_created?.name;
+    const newSession = await autoCreateSessionForTopic(chatId, topicId, topicName);
+    return { session: newSession, isTopicSession: true };
+  }
+
+  // Private chat: use global session
+  return { session: getCurrentSession(), isTopicSession: false };
+}
+
 export interface ProcessPromptDeps {
   bot: Bot<Context>;
   ensureEventSubscription: (directory: string) => Promise<void>;
@@ -119,7 +153,15 @@ export async function processUserPrompt(
   const { bot, ensureEventSubscription } = deps;
   const responseMode = options.responseMode ?? (isTtsEnabled() ? "text_and_tts" : "text_only");
 
-  const currentProject = getCurrentProject();
+  let currentProject = getCurrentProject();
+  if (!currentProject && config.opencode.defaultProjectDir) {
+    // Auto-set project from config
+    const defaultDir = config.opencode.defaultProjectDir;
+    const projectName = defaultDir.split("/").filter(Boolean).pop() || "default";
+    currentProject = { id: projectName, worktree: defaultDir, name: projectName };
+    setCurrentProject(currentProject);
+    logger.info(`[Bot] Auto-selected default project: ${defaultDir}`);
+  }
   if (!currentProject) {
     await ctx.reply(t("bot.project_not_selected"));
     return false;
@@ -128,17 +170,22 @@ export async function processUserPrompt(
   botInstance = bot;
   chatIdInstance = ctx.chat!.id;
 
-  // Initialize pinned message manager if not already
-  if (!pinnedMessageManager.isInitialized()) {
-    pinnedMessageManager.initialize(bot.api, ctx.chat!.id);
+  // Initialize pinned message and keyboard managers (private chats only)
+  const isGroupChat = ctx.chat?.type === "group" || ctx.chat?.type === "supergroup";
+  if (!isGroupChat) {
+    if (!pinnedMessageManager.isInitialized()) {
+      pinnedMessageManager.initialize(bot.api, ctx.chat!.id);
+    }
+    keyboardManager.initialize(bot.api, ctx.chat!.id);
   }
 
-  // Initialize keyboard manager if not already
-  keyboardManager.initialize(bot.api, ctx.chat!.id);
+  // Resolve session based on context (topic or global)
+  const { session: resolvedSession, isTopicSession } = await resolveSession(ctx);
 
-  let currentSession = getCurrentSession();
+  let currentSession: SessionInfo | null = resolvedSession;
 
-  if (currentSession && currentSession.directory !== currentProject.worktree) {
+  // For non-topic sessions, check project mismatch
+  if (!isTopicSession && currentSession && currentSession.directory !== currentProject.worktree) {
     logger.warn(
       `[Bot] Session/project mismatch detected. sessionDirectory=${currentSession.directory}, projectDirectory=${currentProject.worktree}. Resetting session context.`,
     );
@@ -169,38 +216,51 @@ export async function processUserPrompt(
       directory: currentProject.worktree,
     };
 
-    setCurrentSession(currentSession);
-    await ingestSessionInfoForCache(session);
-
-    // Create pinned message for new session
-    try {
-      await pinnedMessageManager.onSessionChange(session.id, session.title);
-    } catch (err) {
-      logger.error("[Bot] Error creating pinned message for new session:", err);
+    if (isTopicSession) {
+      const topicId = ctx.message?.message_thread_id;
+      if (topicId && ctx.chat?.id) {
+        const { setSessionForTopic } = await import("../../session/topic-manager.js");
+        setSessionForTopic(ctx.chat.id, topicId, currentSession);
+      }
+    } else {
+      setCurrentSession(currentSession);
     }
 
-    const currentAgent = await resolveProjectAgent(getStoredAgent());
-    const currentModel = getStoredModel();
-    const contextInfo = pinnedMessageManager.getContextInfo();
-    const variantName = formatVariantForButton(currentModel.variant || "default");
-    keyboardManager.updateAgent(currentAgent);
-    const keyboard = createMainKeyboard(
-      currentAgent,
-      currentModel,
-      contextInfo ?? undefined,
-      variantName,
-    );
+    await ingestSessionInfoForCache(session);
 
-    await ctx.reply(t("bot.session_created", { title: session.title }), {
-      reply_markup: keyboard,
-    });
+    // Create pinned message for new session (only in private chats)
+    if (!isTopicSession) {
+      try {
+        await pinnedMessageManager.onSessionChange(session.id, session.title);
+      } catch (err) {
+        logger.error("[Bot] Error creating pinned message for new session:", err);
+      }
+
+      const currentAgent = await resolveProjectAgent(getStoredAgent());
+      const currentModel = getStoredModel();
+      const contextInfo = pinnedMessageManager.getContextInfo();
+      const variantName = formatVariantForButton(currentModel.variant || "default");
+      keyboardManager.updateAgent(currentAgent);
+      const keyboard = createMainKeyboard(
+        currentAgent,
+        currentModel,
+        contextInfo ?? undefined,
+        variantName,
+      );
+
+      await ctx.reply(t("bot.session_created", { title: session.title }), {
+        reply_markup: keyboard,
+      });
+    } else {
+      await ctx.reply(`Session created for this topic: ${session.title}`);
+    }
   } else {
     logger.info(
       `[Bot] Using existing session: id=${currentSession.id}, title="${currentSession.title}"`,
     );
 
-    // Ensure pinned message exists for existing session
-    if (!pinnedMessageManager.getState().messageId) {
+    // Ensure pinned message exists for existing session (private chats only)
+    if (!isTopicSession && !pinnedMessageManager.getState().messageId) {
       try {
         await pinnedMessageManager.onSessionChange(currentSession.id, currentSession.title);
       } catch (err) {
@@ -239,7 +299,6 @@ export async function processUserPrompt(
     // If no text and files exist, use a placeholder
     if (parts.length === 0 || (parts.length > 0 && parts.every((p) => p.type === "file"))) {
       if (fileParts.length > 0) {
-        // Files without text - add a minimal system prompt
         parts.unshift({ type: "text", text: "See attached file" });
       }
     }

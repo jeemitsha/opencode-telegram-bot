@@ -32,6 +32,7 @@ import {
   handleCommandTextArguments,
 } from "./commands/commands.js";
 import { ttsCommand } from "./commands/tts.js";
+import { openCommand } from "./commands/open.js";
 import {
   handleQuestionCallback,
   showCurrentQuestion,
@@ -48,6 +49,8 @@ import { interactionManager } from "../interaction/manager.js";
 import { clearAllInteractionState } from "../interaction/cleanup.js";
 import { keyboardManager } from "../keyboard/manager.js";
 import { subscribeToEvents } from "../opencode/events.js";
+import { loadTopicSessions, deleteSessionForTopic, autoCreateSessionForTopic } from "../session/topic-manager.js";
+import { opencodeClient } from "../opencode/client.js";
 import { summaryAggregator } from "../summary/aggregator.js";
 import {
   formatSummary,
@@ -87,7 +90,20 @@ import {
 
 let botInstance: Bot<Context> | null = null;
 let chatIdInstance: number | null = null;
+let threadIdInstance: number | undefined = undefined;
 let commandsInitialized = false;
+
+/** Track thinking message IDs so we can delete them after response completes */
+const thinkingMessageIds: Map<string, number[]> = new Map();
+
+/** Check if a session ID is valid for the current context (global or topic session) */
+function isActiveSession(sessionId: string): boolean {
+  const currentSession = getCurrentSession();
+  if (currentSession && currentSession.id === sessionId) return true;
+  // For topic sessions, the session won't be in getCurrentSession()
+  // Accept any session that the aggregator is tracking
+  return true;
+}
 
 const TELEGRAM_DOCUMENT_CAPTION_MAX_LENGTH = 1024;
 const RESPONSE_STREAM_THROTTLE_MS = config.bot.responseStreamThrottleMs;
@@ -141,25 +157,27 @@ const toolMessageBatcher = new ToolMessageBatcher({
       return;
     }
 
-    const currentSession = getCurrentSession();
-    if (!currentSession || currentSession.id !== sessionId) {
-      return;
-    }
-
     const keyboard = getCurrentReplyKeyboard();
 
-    await botInstance.api.sendMessage(chatIdInstance, text, {
+    const sentMsg = await botInstance.api.sendMessage(chatIdInstance, text, {
       disable_notification: true,
       ...(keyboard ? { reply_markup: keyboard } : {}),
+      ...(threadIdInstance ? { message_thread_id: threadIdInstance } : {}),
     });
+
+    // Track thinking messages for later cleanup
+    if (text.includes("Thinking") || text.includes("💭")) {
+      const ids = thinkingMessageIds.get(sessionId) ?? [];
+      ids.push(sentMsg.message_id);
+      thinkingMessageIds.set(sessionId, ids);
+    }
   },
   sendFile: async (sessionId, fileData) => {
     if (!botInstance || !chatIdInstance) {
       return;
     }
 
-    const currentSession = getCurrentSession();
-    if (!currentSession || currentSession.id !== sessionId) {
+    if (!isActiveSession(sessionId)) {
       return;
     }
 
@@ -179,6 +197,7 @@ const toolMessageBatcher = new ToolMessageBatcher({
         caption: fileData.caption,
         disable_notification: true,
         ...(keyboard ? { reply_markup: keyboard } : {}),
+        ...(threadIdInstance ? { message_thread_id: threadIdInstance } : {}),
       });
     } finally {
       await fs.unlink(tempFilePath).catch(() => {});
@@ -257,13 +276,13 @@ const toolCallStreamer = new ToolCallStreamer({
       throw new Error("Bot context missing for tool stream send");
     }
 
-    const currentSession = getCurrentSession();
-    if (!currentSession || currentSession.id !== sessionId) {
+    if (!isActiveSession(sessionId)) {
       throw new Error(`Tool stream session mismatch for send: ${sessionId}`);
     }
 
     const sentMessage = await botInstance.api.sendMessage(chatIdInstance, text, {
       disable_notification: true,
+      ...(threadIdInstance ? { message_thread_id: threadIdInstance } : {}),
     });
 
     return sentMessage.message_id;
@@ -273,8 +292,7 @@ const toolCallStreamer = new ToolCallStreamer({
       throw new Error("Bot context missing for tool stream edit");
     }
 
-    const currentSession = getCurrentSession();
-    if (!currentSession || currentSession.id !== sessionId) {
+    if (!isActiveSession(sessionId)) {
       throw new Error(`Tool stream session mismatch for edit: ${sessionId}`);
     }
 
@@ -295,8 +313,7 @@ const toolCallStreamer = new ToolCallStreamer({
       throw new Error("Bot context missing for tool stream delete");
     }
 
-    const currentSession = getCurrentSession();
-    if (!currentSession || currentSession.id !== sessionId) {
+    if (!isActiveSession(sessionId)) {
       throw new Error(`Tool stream session mismatch for delete: ${sessionId}`);
     }
 
@@ -324,7 +341,7 @@ function getToolStreamKey(tool: string): ToolStreamKey {
 }
 
 async function ensureCommandsInitialized(ctx: Context, next: NextFunction): Promise<void> {
-  if (commandsInitialized || !ctx.from || ctx.from.id !== config.telegram.allowedUserId) {
+  if (commandsInitialized || !ctx.from || !config.telegram.allowedUserIds.includes(ctx.from.id)) {
     await next();
     return;
   }
@@ -370,8 +387,7 @@ async function ensureEventSubscription(directory: string): Promise<void> {
       return;
     }
 
-    const currentSession = getCurrentSession();
-    if (!currentSession || currentSession.id !== sessionId) {
+    if (!isActiveSession(sessionId)) {
       return;
     }
 
@@ -396,15 +412,7 @@ async function ensureEventSubscription(directory: string): Promise<void> {
       return;
     }
 
-    const currentSession = getCurrentSession();
-    if (currentSession?.id !== sessionId) {
-      clearPromptResponseMode(sessionId);
-      responseStreamer.clearMessage(sessionId, messageId, "session_mismatch");
-      toolCallStreamer.clearSession(sessionId, "session_mismatch");
-      foregroundSessionState.markIdle(sessionId);
-      await scheduledTaskRuntime.flushDeferredDeliveries();
-      return;
-    }
+    // Session check removed — topic sessions don't use getCurrentSession()
 
     const botApi = botInstance.api;
     const chatId = chatIdInstance;
@@ -426,12 +434,16 @@ async function ensureEventSubscription(directory: string): Promise<void> {
         resolveFormat: () => (getAssistantParseMode() === "MarkdownV2" ? "markdown_v2" : "raw"),
         getReplyKeyboard: getCurrentReplyKeyboard,
         sendText: async (text, rawFallbackText, options, format) => {
+          const mergedOptions = {
+            ...(options as Parameters<typeof sendBotText>[0]["options"]),
+            ...(threadIdInstance ? { message_thread_id: threadIdInstance } : {}),
+          };
           await sendBotText({
             api: botApi,
             chatId,
             text,
             rawFallbackText,
-            options: options as Parameters<typeof sendBotText>[0]["options"],
+            options: mergedOptions,
             format,
           });
         },
@@ -461,6 +473,42 @@ async function ensureEventSubscription(directory: string): Promise<void> {
     } finally {
       foregroundSessionState.markIdle(sessionId);
       await scheduledTaskRuntime.flushDeferredDeliveries();
+
+      // Delete thinking messages after response is complete
+      const thinkingIds = thinkingMessageIds.get(sessionId);
+      if (thinkingIds && thinkingIds.length > 0 && botInstance && chatIdInstance) {
+        for (const msgId of thinkingIds) {
+          botInstance.api.deleteMessage(chatIdInstance, msgId).catch(() => {});
+        }
+        thinkingMessageIds.delete(sessionId);
+      }
+
+      // Rename Telegram topic to match OpenCode session title (forum groups only)
+      if (botInstance && chatIdInstance && threadIdInstance) {
+        try {
+          const { getSessionForTopic, setSessionForTopic, getAllTopicSessions } = await import("../session/topic-manager.js");
+          const topicSession = getAllTopicSessions(chatIdInstance).find(s => s.session.id === sessionId);
+          if (topicSession) {
+            const { data: freshSession } = await opencodeClient.session.get({
+              sessionID: sessionId,
+              directory: topicSession.session.directory,
+            });
+            if (freshSession && freshSession.title && freshSession.title !== topicSession.session.title) {
+              // Truncate to 128 chars (Telegram limit for topic names)
+              const newTitle = freshSession.title.length > 128 ? freshSession.title.slice(0, 125) + "..." : freshSession.title;
+              await botInstance.api.editForumTopic(chatIdInstance, threadIdInstance, { name: newTitle });
+              // Update stored session info
+              setSessionForTopic(chatIdInstance, topicSession.topicId, {
+                ...topicSession.session,
+                title: freshSession.title,
+              });
+              logger.info(`[Bot] Renamed topic ${threadIdInstance} to "${newTitle}"`);
+            }
+          }
+        } catch (err) {
+          logger.debug(`[Bot] Could not rename topic: ${err}`);
+        }
+      }
     }
   });
 
@@ -470,8 +518,7 @@ async function ensureEventSubscription(directory: string): Promise<void> {
       return;
     }
 
-    const currentSession = getCurrentSession();
-    if (!currentSession || currentSession.id !== toolInfo.sessionId) {
+    if (!isActiveSession(toolInfo.sessionId)) {
       return;
     }
 
@@ -506,8 +553,7 @@ async function ensureEventSubscription(directory: string): Promise<void> {
       return;
     }
 
-    const currentSession = getCurrentSession();
-    if (!currentSession || currentSession.id !== sessionId) {
+    if (!isActiveSession(sessionId)) {
       return;
     }
 
@@ -622,8 +668,7 @@ async function ensureEventSubscription(directory: string): Promise<void> {
       return;
     }
 
-    const currentSession = getCurrentSession();
-    if (!currentSession || currentSession.id !== sessionId) {
+    if (!isActiveSession(sessionId)) {
       return;
     }
 
@@ -711,8 +756,7 @@ async function ensureEventSubscription(directory: string): Promise<void> {
       return;
     }
 
-    const currentSession = getCurrentSession();
-    if (!currentSession || currentSession.id !== sessionId) {
+    if (!isActiveSession(sessionId)) {
       clearPromptResponseMode(sessionId);
       responseStreamer.clearSession(sessionId, "session_error_not_current");
       toolCallStreamer.clearSession(sessionId, "session_error_not_current");
@@ -735,7 +779,9 @@ async function ensureEventSubscription(directory: string): Promise<void> {
         : normalizedMessage;
 
     await botInstance.api
-      .sendMessage(chatIdInstance, t("bot.session_error", { message: truncatedMessage }))
+      .sendMessage(chatIdInstance, t("bot.session_error", { message: truncatedMessage }), {
+        ...(threadIdInstance ? { message_thread_id: threadIdInstance } : {}),
+      })
       .catch((err) => {
         logger.error("[Bot] Failed to send session.error message:", err);
       });
@@ -749,8 +795,7 @@ async function ensureEventSubscription(directory: string): Promise<void> {
       return;
     }
 
-    const currentSession = getCurrentSession();
-    if (!currentSession || currentSession.id !== sessionId) {
+    if (!isActiveSession(sessionId)) {
       return;
     }
 
@@ -905,6 +950,7 @@ export function createBot(): Bot<Context> {
   };
 
   bot.command("start", startCommand);
+  bot.command("open", openCommand);
   bot.command("help", helpCommand);
   bot.command("status", statusCommand);
   bot.command("tts", ttsCommand);
@@ -928,6 +974,7 @@ export function createBot(): Bot<Context> {
     if (ctx.chat) {
       botInstance = bot;
       chatIdInstance = ctx.chat.id;
+      threadIdInstance = ctx.callbackQuery?.message?.message_thread_id;
     }
 
     try {
@@ -1082,6 +1129,7 @@ export function createBot(): Bot<Context> {
     logger.debug(`[Bot] Received voice message, chatId=${ctx.chat.id}`);
     botInstance = bot;
     chatIdInstance = ctx.chat.id;
+    threadIdInstance = ctx.message?.message_thread_id;
     await handleVoiceMessage(ctx, voicePromptDeps);
   });
 
@@ -1089,6 +1137,7 @@ export function createBot(): Bot<Context> {
     logger.debug(`[Bot] Received audio message, chatId=${ctx.chat.id}`);
     botInstance = bot;
     chatIdInstance = ctx.chat.id;
+    threadIdInstance = ctx.message?.message_thread_id;
     await handleVoiceMessage(ctx, voicePromptDeps);
   });
 
@@ -1121,6 +1170,7 @@ export function createBot(): Bot<Context> {
         if (caption.trim().length > 0) {
           botInstance = bot;
           chatIdInstance = ctx.chat.id;
+    threadIdInstance = ctx.message?.message_thread_id;
           const promptDeps = { bot, ensureEventSubscription };
           await processUserPrompt(ctx, caption, promptDeps);
         }
@@ -1146,6 +1196,7 @@ export function createBot(): Bot<Context> {
 
       botInstance = bot;
       chatIdInstance = ctx.chat.id;
+    threadIdInstance = ctx.message?.message_thread_id;
 
       // Send via processUserPrompt with file part
       const promptDeps = { bot, ensureEventSubscription };
@@ -1161,6 +1212,7 @@ export function createBot(): Bot<Context> {
     logger.debug(`[Bot] Received document message, chatId=${ctx.chat.id}`);
     botInstance = bot;
     chatIdInstance = ctx.chat.id;
+    threadIdInstance = ctx.message?.message_thread_id;
     const deps = { bot, ensureEventSubscription };
     await handleDocumentMessage(ctx, deps);
   });
@@ -1173,6 +1225,7 @@ export function createBot(): Bot<Context> {
 
     botInstance = bot;
     chatIdInstance = ctx.chat.id;
+    threadIdInstance = ctx.message?.message_thread_id;
 
     if (text.startsWith("/")) {
       return;
@@ -1203,6 +1256,54 @@ export function createBot(): Bot<Context> {
 
     logger.debug("[Bot] message:text handler completed (prompt sent in background)");
   });
+
+  // Forum topic event handlers — auto-create session when a new topic is created
+  bot.on("message:forum_topic_created", async (ctx) => {
+    const topicId = ctx.message.message_thread_id;
+    if (!topicId) return;
+    const topicName = (ctx.message as any).forum_topic_created?.name || "New topic";
+    const chatId = ctx.chat.id;
+
+    logger.info(`[Bot] Forum topic created: chatId=${chatId}, topicId=${topicId}, name="${topicName}"`);
+
+    // Send "creating" message, then replace with ready message
+    const creatingMsg = await ctx.reply(
+      `⏳ Creating OpenCode session for "${topicName}"...`,
+      { message_thread_id: topicId },
+    );
+
+    const session = await autoCreateSessionForTopic(chatId, topicId, topicName);
+
+    // Delete the "creating" message
+    try {
+      await ctx.api.deleteMessage(chatId, creatingMsg.message_id);
+    } catch {
+      // ignore if already deleted
+    }
+
+    if (session) {
+      await ctx.reply(
+        `✅ OpenCode session ready\n\n**Session:** ${session.title}\n**ID:** \`${session.id}\`\n\nSend your coding instructions here.`,
+        { parse_mode: "Markdown", message_thread_id: topicId },
+      );
+    } else {
+      await ctx.reply(
+        `❌ Failed to create session. Make sure OpenCode server is running.`,
+        { message_thread_id: topicId },
+      );
+    }
+  });
+
+  bot.on("message:forum_topic_closed", async (ctx) => {
+    logger.info(`[Bot] Forum topic closed: chatId=${ctx.chat.id}, topicId=${ctx.message.message_thread_id}`);
+  });
+
+  bot.on("message:forum_topic_reopened", async (ctx) => {
+    logger.info(`[Bot] Forum topic reopened: chatId=${ctx.chat.id}, topicId=${ctx.message.message_thread_id}`);
+  });
+
+  // Load topic sessions on startup
+  void loadTopicSessions();
 
   bot.catch((err) => {
     logger.error("[Bot] Unhandled error in bot:", err);

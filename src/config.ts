@@ -78,13 +78,18 @@ function getOptionalMessageFormatModeEnvVar(
 export const config = {
   telegram: {
     token: getEnvVar("TELEGRAM_BOT_TOKEN"),
-    allowedUserId: parseInt(getEnvVar("TELEGRAM_ALLOWED_USER_ID"), 10),
+    allowedUserIds: (getEnvVar("TELEGRAM_ALLOWED_USER_IDS", false) || getEnvVar("TELEGRAM_ALLOWED_USER_ID", false) || "")
+      .split(",")
+      .map((id) => parseInt(id.trim(), 10))
+      .filter((id) => !isNaN(id) && id > 0),
     proxyUrl: getEnvVar("TELEGRAM_PROXY_URL", false),
   },
   opencode: {
     apiUrl: getEnvVar("OPENCODE_API_URL", false) || "http://localhost:4096",
     username: getEnvVar("OPENCODE_SERVER_USERNAME", false) || "opencode",
     password: getEnvVar("OPENCODE_SERVER_PASSWORD", false),
+    defaultProjectDir: getEnvVar("OPENCODE_DEFAULT_PROJECT_DIR", false),
+    publicUrl: getEnvVar("OPENCODE_PUBLIC_URL", false),
     model: {
       provider: getEnvVar("OPENCODE_MODEL_PROVIDER", true), // Required
       modelId: getEnvVar("OPENCODE_MODEL_ID", true), // Required

@@ -317,6 +317,7 @@ class SummaryAggregator {
 
   processEvent(event: Event): void {
     const eventType = (event as unknown as { type: string }).type;
+    logger.info(`[Aggregator] RAW EVENT: ${eventType} | currentSession=${this.currentSessionId}`);
 
     if (eventType === "message.part.delta") {
       this.handleMessagePartDelta(event as unknown as MessagePartDeltaEventRaw);

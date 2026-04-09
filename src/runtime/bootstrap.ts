@@ -41,7 +41,7 @@ interface WizardCollectedValues {
 export interface WizardEnvValues {
   BOT_LOCALE: Locale;
   TELEGRAM_BOT_TOKEN: string;
-  TELEGRAM_ALLOWED_USER_ID: string;
+  TELEGRAM_ALLOWED_USER_IDS: string;
   OPENCODE_API_URL?: string;
   OPENCODE_SERVER_USERNAME: string;
   OPENCODE_SERVER_PASSWORD?: string;
@@ -67,8 +67,10 @@ export function validateRuntimeEnvValues(values: Record<string, string>): EnvVal
     return { isValid: false, reason: "Missing TELEGRAM_BOT_TOKEN" };
   }
 
-  if (!isPositiveInteger(values.TELEGRAM_ALLOWED_USER_ID || "")) {
-    return { isValid: false, reason: "Invalid TELEGRAM_ALLOWED_USER_ID" };
+  const userIdsRaw = values.TELEGRAM_ALLOWED_USER_IDSS || values.TELEGRAM_ALLOWED_USER_IDS || "";
+  const userIds = userIdsRaw.split(",").map((id: string) => id.trim()).filter(Boolean);
+  if (userIds.length === 0 || !userIds.every((id: string) => isPositiveInteger(id))) {
+    return { isValid: false, reason: "Invalid TELEGRAM_ALLOWED_USER_IDSS (comma-separated user IDs)" };
   }
 
   if (!values.OPENCODE_MODEL_PROVIDER || values.OPENCODE_MODEL_PROVIDER.trim().length === 0) {
@@ -116,7 +118,7 @@ export function buildEnvFileContent(existingContent: string, values: WizardEnvVa
   const orderedUpdates: Array<[keyof WizardEnvValues, string | undefined]> = [
     ["BOT_LOCALE", values.BOT_LOCALE],
     ["TELEGRAM_BOT_TOKEN", values.TELEGRAM_BOT_TOKEN],
-    ["TELEGRAM_ALLOWED_USER_ID", values.TELEGRAM_ALLOWED_USER_ID],
+    ["TELEGRAM_ALLOWED_USER_IDS", values.TELEGRAM_ALLOWED_USER_IDS],
     ["OPENCODE_API_URL", values.OPENCODE_API_URL],
     ["OPENCODE_SERVER_USERNAME", values.OPENCODE_SERVER_USERNAME],
     ["OPENCODE_SERVER_PASSWORD", values.OPENCODE_SERVER_PASSWORD],
@@ -435,7 +437,7 @@ async function runWizardAndPersist(runtimePaths: RuntimePaths): Promise<void> {
   const envValues: WizardEnvValues = {
     BOT_LOCALE: wizardValues.locale,
     TELEGRAM_BOT_TOKEN: wizardValues.token,
-    TELEGRAM_ALLOWED_USER_ID: wizardValues.allowedUserId,
+    TELEGRAM_ALLOWED_USER_IDS: wizardValues.allowedUserId,
     OPENCODE_API_URL: wizardValues.apiUrl,
     OPENCODE_SERVER_USERNAME: wizardValues.serverUsername,
     OPENCODE_SERVER_PASSWORD: wizardValues.serverPassword,
