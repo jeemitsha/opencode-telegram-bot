@@ -580,8 +580,7 @@ async function ensureEventSubscription(directory: string): Promise<void> {
       return;
     }
 
-    const currentSession = getCurrentSession();
-    if (!currentSession || currentSession.id !== fileInfo.sessionId) {
+    if (!isActiveSession(fileInfo.sessionId)) {
       return;
     }
 
