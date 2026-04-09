@@ -274,13 +274,6 @@ export async function processUserPrompt(
   summaryAggregator.setSession(currentSession.id);
   summaryAggregator.setBotAndChatId(bot, ctx.chat!.id);
 
-  const sessionIsBusy = await isSessionBusy(currentSession.id, currentSession.directory);
-  if (sessionIsBusy) {
-    logger.info(`[Bot] Ignoring new prompt: session ${currentSession.id} is busy`);
-    await ctx.reply(t("bot.session_busy"));
-    return false;
-  }
-
   try {
     const currentAgent = await resolveProjectAgent(getStoredAgent());
     const storedModel = getStoredModel();
