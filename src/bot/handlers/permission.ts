@@ -3,6 +3,7 @@ import { permissionManager } from "../../permission/manager.js";
 import { opencodeClient } from "../../opencode/client.js";
 import { getCurrentProject } from "../../settings/manager.js";
 import { getCurrentSession } from "../../session/manager.js";
+import { threadIdOption } from "../context.js";
 import { summaryAggregator } from "../../summary/aggregator.js";
 import { interactionManager } from "../../interaction/manager.js";
 import { logger } from "../../utils/logger.js";
@@ -203,7 +204,7 @@ async function handlePermissionReply(
       if (error) {
         logger.error("[PermissionHandler] Failed to send permission reply:", error);
         if (ctx.api && chatId) {
-          void ctx.api.sendMessage(chatId, t("permission.send_reply_error")).catch(() => {});
+          void ctx.api.sendMessage(chatId, t("permission.send_reply_error"), threadIdOption()).catch(() => {});
         }
         return;
       }
@@ -240,6 +241,7 @@ export async function showPermissionRequest(
   try {
     const message = await bot.sendMessage(chatId, text, {
       reply_markup: keyboard,
+      ...threadIdOption(),
     });
 
     logger.debug(`[PermissionHandler] Message sent, messageId=${message.message_id}`);

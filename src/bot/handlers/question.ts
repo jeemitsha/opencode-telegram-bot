@@ -8,6 +8,7 @@ import { interactionManager } from "../../interaction/manager.js";
 import { logger } from "../../utils/logger.js";
 import { safeBackgroundTask } from "../../utils/safe-background-task.js";
 import { t } from "../../i18n/index.js";
+import { threadIdOption } from "../context.js";
 
 const MAX_BUTTON_LENGTH = 60;
 
@@ -272,6 +273,7 @@ export async function showCurrentQuestion(bot: Context["api"], chatId: number): 
   try {
     const message = await bot.sendMessage(chatId, text, {
       reply_markup: keyboard,
+      ...threadIdOption(),
     });
 
     logger.debug(`[QuestionHandler] Message sent, messageId=${message.message_id}`);
@@ -352,10 +354,10 @@ async function showPollSummary(bot: Context["api"], chatId: number): Promise<voi
   await sendAllAnswersToAgent(bot, chatId);
 
   if (answers.length === 0) {
-    await bot.sendMessage(chatId, t("question.completed_no_answers"));
+    await bot.sendMessage(chatId, t("question.completed_no_answers"), threadIdOption());
   } else {
     const summary = formatAnswersSummary(answers);
-    await bot.sendMessage(chatId, summary);
+    await bot.sendMessage(chatId, summary, threadIdOption());
   }
 
   clearQuestionInteraction("question_completed");
@@ -372,13 +374,13 @@ async function sendAllAnswersToAgent(bot: Context["api"], chatId: number): Promi
 
   if (!directory) {
     logger.error("[QuestionHandler] No project for sending answers");
-    await bot.sendMessage(chatId, t("question.no_active_project"));
+    await bot.sendMessage(chatId, t("question.no_active_project"), threadIdOption());
     return;
   }
 
   if (!requestID) {
     logger.error("[QuestionHandler] No requestID for sending answers");
-    await bot.sendMessage(chatId, t("question.no_active_request"));
+    await bot.sendMessage(chatId, t("question.no_active_request"), threadIdOption());
     return;
   }
 
@@ -422,7 +424,7 @@ async function sendAllAnswersToAgent(bot: Context["api"], chatId: number): Promi
     onSuccess: ({ error }) => {
       if (error) {
         logger.error("[QuestionHandler] Failed to send answers via question.reply:", error);
-        void bot.sendMessage(chatId, t("question.send_answers_error")).catch(() => {});
+        void bot.sendMessage(chatId, t("question.send_answers_error"), threadIdOption()).catch(() => {});
         return;
       }
 

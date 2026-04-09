@@ -51,6 +51,7 @@ import { keyboardManager } from "../keyboard/manager.js";
 import { subscribeToEvents } from "../opencode/events.js";
 import { loadTopicSessions, deleteSessionForTopic, autoCreateSessionForTopic } from "../session/topic-manager.js";
 import { opencodeClient } from "../opencode/client.js";
+import { setCurrentThreadId, getCurrentThreadId, threadIdOption } from "./context.js";
 import { summaryAggregator } from "../summary/aggregator.js";
 import {
   formatSummary,
@@ -974,6 +975,7 @@ export function createBot(): Bot<Context> {
       botInstance = bot;
       chatIdInstance = ctx.chat.id;
       threadIdInstance = ctx.callbackQuery?.message?.message_thread_id;
+      setCurrentThreadId(threadIdInstance);
     }
 
     try {
@@ -1129,6 +1131,7 @@ export function createBot(): Bot<Context> {
     botInstance = bot;
     chatIdInstance = ctx.chat.id;
     threadIdInstance = ctx.message?.message_thread_id;
+    setCurrentThreadId(threadIdInstance);
     await handleVoiceMessage(ctx, voicePromptDeps);
   });
 
@@ -1137,6 +1140,7 @@ export function createBot(): Bot<Context> {
     botInstance = bot;
     chatIdInstance = ctx.chat.id;
     threadIdInstance = ctx.message?.message_thread_id;
+    setCurrentThreadId(threadIdInstance);
     await handleVoiceMessage(ctx, voicePromptDeps);
   });
 
@@ -1170,6 +1174,7 @@ export function createBot(): Bot<Context> {
           botInstance = bot;
           chatIdInstance = ctx.chat.id;
     threadIdInstance = ctx.message?.message_thread_id;
+    setCurrentThreadId(threadIdInstance);
           const promptDeps = { bot, ensureEventSubscription };
           await processUserPrompt(ctx, caption, promptDeps);
         }
@@ -1196,6 +1201,7 @@ export function createBot(): Bot<Context> {
       botInstance = bot;
       chatIdInstance = ctx.chat.id;
     threadIdInstance = ctx.message?.message_thread_id;
+    setCurrentThreadId(threadIdInstance);
 
       // Send via processUserPrompt with file part
       const promptDeps = { bot, ensureEventSubscription };
@@ -1212,6 +1218,7 @@ export function createBot(): Bot<Context> {
     botInstance = bot;
     chatIdInstance = ctx.chat.id;
     threadIdInstance = ctx.message?.message_thread_id;
+    setCurrentThreadId(threadIdInstance);
     const deps = { bot, ensureEventSubscription };
     await handleDocumentMessage(ctx, deps);
   });
@@ -1225,6 +1232,7 @@ export function createBot(): Bot<Context> {
     botInstance = bot;
     chatIdInstance = ctx.chat.id;
     threadIdInstance = ctx.message?.message_thread_id;
+    setCurrentThreadId(threadIdInstance);
 
     if (text.startsWith("/")) {
       return;
